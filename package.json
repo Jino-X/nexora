@@ -1,0 +1,12 @@
+{
+  "name": "nexora",
+  "private": true,
+  "packageManager": "pnpm@11.2.2",
+  "scripts": {
+    "dev:web": "pnpm --filter @nexora/web dev",
+    "build:web": "pnpm --filter @nexora/web build",
+    "lint:web": "pnpm --filter @nexora/web lint",
+    "typecheck:web": "pnpm --filter @nexora/web typecheck",
+    "test:web": "pnpm --filter @nexora/web test"
+  }
+}

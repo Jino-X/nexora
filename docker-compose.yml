@@ -1,0 +1,97 @@
+# Local development stack. Core services start by default; heavier pieces are opt-in profiles:
+#   docker compose up                              # api + worker + web (SQLite, dev auth, offline LLM fallback)
+#   docker compose --profile llm up                # + Ollama (then: docker compose exec ollama ollama pull qwen3:8b)
+#   docker compose --profile postgres up           # + local Postgres/pgvector with the Supabase migrations
+#   docker compose --profile voice --profile speech up   # + LiveKit voice agent + speech models
+# Run `python3 infrastructure/scripts/bootstrap-env.py` first to create the .env files.
+
+name: nexora
+
+x-api-env: &api-env
+  env_file: services/api/.env
+  environment:
+    DATABASE_URL: ${DATABASE_URL:-sqlite+aiosqlite:////data/nexora.db}
+    OLLAMA_BASE_URL: ${OLLAMA_BASE_URL:-http://ollama:11434}
+    CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:3000}
+    LOG_JSON: "true"
+
+services:
+  api:
+    build: { context: ., dockerfile: infrastructure/docker/api.Dockerfile }
+    <<: *api-env
+    environment:
+      DATABASE_URL: ${DATABASE_URL:-sqlite+aiosqlite:////data/nexora.db}
+      OLLAMA_BASE_URL: ${OLLAMA_BASE_URL:-http://ollama:11434}
+      CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:3000}
+      RUN_SCHEDULER_IN_API: "false"
+      LOG_JSON: "true"
+    ports: ["8000:8000"]
+    volumes: ["api-data:/data"]
+    restart: unless-stopped
+
+  worker:
+    build: { context: ., dockerfile: infrastructure/docker/api.Dockerfile }
+    <<: *api-env
+    command: ["python", "-m", "app.automations.worker"]
+    volumes: ["api-data:/data"]
+    depends_on: [api]
+    restart: unless-stopped
+
+  web:
+    build:
+      context: .
+      dockerfile: infrastructure/docker/web.Dockerfile
+      args:
+        NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-http://localhost:8000}
+        NEXT_PUBLIC_APP_URL: ${NEXT_PUBLIC_APP_URL:-http://localhost:3000}
+        NEXT_PUBLIC_SUPABASE_URL: ${NEXT_PUBLIC_SUPABASE_URL:-}
+        NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY: ${NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY:-}
+        NEXT_PUBLIC_LIVEKIT_URL: ${NEXT_PUBLIC_LIVEKIT_URL:-}
+    ports: ["3000:3000"]
+    depends_on: [api]
+    restart: unless-stopped
+
+  ollama:
+    profiles: ["llm"]
+    image: ollama/ollama:0.40.16
+    ports: ["11434:11434"]
+    volumes: ["ollama:/root/.ollama"]
+    restart: unless-stopped
+    # NVIDIA GPU: uncomment
+    # deploy: { resources: { reservations: { devices: [{ driver: nvidia, count: all, capabilities: [gpu] }] } } }
+
+  postgres:
+    profiles: ["postgres"]
+    image: pgvector/pgvector:0.8.7-pg17-trixie
+    environment:
+      POSTGRES_PASSWORD: nexora-local-only
+      POSTGRES_DB: nexora
+    ports: ["54322:5432"]
+    volumes:
+      - pg-data:/var/lib/postgresql/data
+      - ./infrastructure/docker/postgres-init/00-supabase-shim.sql:/docker-entrypoint-initdb.d/00-supabase-shim.sql:ro
+      - ./supabase/migrations/20261114000000_initial_schema.sql:/docker-entrypoint-initdb.d/10-initial-schema.sql:ro
+
+  speech:
+    profiles: ["speech"]
+    build: { context: ., dockerfile: infrastructure/docker/speech.Dockerfile }
+    env_file: services/speech/.env
+    volumes: ["models:/models"]
+    expose: ["8100"]
+    restart: unless-stopped
+
+  voice-agent:
+    profiles: ["voice"]
+    build: { context: ., dockerfile: infrastructure/docker/voice-agent.Dockerfile }
+    env_file: services/voice-agent/.env
+    environment:
+      NEXORA_API_URL: http://api:8000
+      SPEECH_SERVER_URL: http://speech:8100
+    depends_on: [api]
+    restart: unless-stopped
+
+volumes:
+  api-data:
+  ollama:
+  pg-data:
+  models:
